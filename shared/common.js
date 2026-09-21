@@ -1,22 +1,51 @@
 export const PROTOCOL_VERSION = 1;
-export const NTFY_BASE = 'https://ntfy.sh'; // Troque pela instância dedicada em produção.
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const FP_RE = /^[A-Za-z0-9_-]{43}$/;
 export const te = new TextEncoder();
 export const td = new TextDecoder();
+export const REQUEST_TIMEOUT_MS = 15000;
 
-export function sessionFromLocation({ fingerprint = false } = {}) {
+export async function fetchWithTimeout(resource, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(resource, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('A requisição demorou demais. Verifique sua conexão e tente novamente.');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function sessionFromLocation({ fingerprint = false, sheet = false } = {}) {
   const params = new URLSearchParams(location.search);
   const values = params.getAll('uuid');
   if (values.length !== 1) return null;
   const uuid = values[0].toLowerCase();
   if (!UUID_RE.test(uuid)) return null;
-  if (!fingerprint) return { uuid };
+  let sheetId;
+  if (sheet) {
+    const sheets=params.getAll('sheet-id');
+    if(sheets.length!==1||!SHEET_ID_RE.test(sheets[0]))return null;
+    sheetId=sheets[0];
+  }
+  if (!fingerprint) return sheet ? {uuid,sheetId} : { uuid };
   const hash = new URLSearchParams(location.hash.slice(1));
   const keys = hash.getAll('k');
   if (keys.length !== 1 || !FP_RE.test(keys[0])) return null;
-  return { uuid, trust: keys[0] };
+  return sheet ? {uuid,sheetId,trust:keys[0]} : { uuid, trust: keys[0] };
 }
+
+export const SHEET_ID_RE=/^[A-Za-z0-9_-]{20,}$/;
+export function validateEndpoints(values){
+  if(!Array.isArray(values))throw new Error('Lista de endpoints inválida.');
+  const endpoints=[],seen=new Set();
+  for(const raw of values){if(!String(raw??'').trim())continue;let url;try{url=new URL(String(raw).trim());}catch{throw new Error('Endpoint inválido.');}if(url.protocol!=='https:'||url.hostname.toLowerCase()!=='script.google.com'||url.username||url.password||url.search||url.hash||!/^\/macros\/s\/[A-Za-z0-9_-]+\/exec\/?$/.test(url.pathname))throw new Error(`Endpoint inválido: ${raw}`);url.hostname='script.google.com';url.port='';url.pathname=url.pathname.replace(/\/$/,'');const normalized=url.href;if(seen.has(normalized))throw new Error(`Endpoint repetido: ${normalized}`);seen.add(normalized);endpoints.push(normalized);}
+  if(!endpoints.length)throw new Error('A coluna H não contém endpoints.');if(endpoints.length>20)throw new Error('A coluna H excede o limite de 20 endpoints.');return endpoints;
+}
+export async function endpointFingerprint(endpoints){return sha(validateEndpoints(endpoints).join('\n'));}
+export async function assignedEndpoint(uuid,deviceId,endpoints){const list=validateEndpoints(endpoints),fingerprint=await endpointFingerprint(list),digest=unb64(await sha(`${uuid}:${deviceId}:${fingerprint}`));let value=0n;for(const byte of digest.slice(0,8))value=(value<<8n)|BigInt(byte);const index=Number(value%BigInt(list.length));return {endpoint:list[index],index,fingerprint};}
 
 export const storage = uuid => ({
   get(name) { try { return localStorage.getItem(`eleicoes:v1:${uuid}:${name}`); } catch { return null; } },
@@ -87,34 +116,39 @@ export async function deviceKeys(cache) {
 }
 
 export function messageBase(type, uuid, fingerprint) { return { type, protocolVersion:1, sessionId:uuid, publishedAt:new Date().toISOString(), signingKeyFingerprint:fingerprint }; }
-export async function publish(uuid, message) {
-  // Na URL do tópico, o ntfy trata o corpo como a mensagem somente no formato
-  // texto. O formato application/json é reservado à API da URL raiz do ntfy.
-  const res = await fetch(`${NTFY_BASE}/${uuid}`, { method:'POST', headers:{'Content-Type':'text/plain; charset=utf-8'}, body:JSON.stringify(message) });
-  if (!res.ok) throw new Error(`ntfy respondeu ${res.status}.`); return res;
+export async function publish(uuid,message,endpoint){
+  const url=validateEndpoints([endpoint])[0],res=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify({action:'append',sessionId:uuid,message})});
+  let receipt;try{receipt=await res.json();}catch{throw new Error('Resposta não JSON do endpoint.');}
+  if(!res.ok||!receipt?.ok)throw new Error(receipt?.error||`Endpoint respondeu ${res.status}.`);
+  if(receipt.sessionId!==uuid||!Number.isSafeInteger(receipt.cursor)||receipt.cursor<1||typeof receipt.hash!=='string')throw new Error('Recibo inválido do endpoint.');
+  return receipt;
 }
-export async function history(uuid, since='all') {
-  const res = await fetch(`${NTFY_BASE}/${uuid}/json?poll=1&since=${encodeURIComponent(since)}`, {headers:{Accept:'application/x-ndjson'}});
-  if (!res.ok) throw new Error(`Não foi possível consultar o tópico (${res.status}).`);
-  if (res.headers.get('X-Messages-Truncated') === '1') throw new Error('Histórico remoto incompleto.');
-  const text = await res.text(); return text.split(/\r?\n/).filter(Boolean).flatMap(line => { try {
-    const n=JSON.parse(line), m=JSON.parse(n.message);
-    // Metadados de transporte não pertencem à mensagem assinada e, portanto,
-    // não podem participar da enumeração usada por signedPayload().
-    Object.defineProperties(m,{_ntfyId:{value:n.id,enumerable:false},_ntfyTime:{value:n.time,enumerable:false}});
-    return [m];
-  } catch { return []; } });
+export async function publishAll(uuid,message,endpoints){
+  const selected=validateEndpoints(endpoints),settled=await Promise.allSettled(selected.map(endpoint=>publish(uuid,message,endpoint)));
+  const failures=settled.flatMap((r,i)=>r.status==='rejected'?[{endpoint:selected[i],error:r.reason.message}]:[]);
+  if(failures.length){const e=new Error(`Publicação incompleta em ${failures.length} endpoint(s).`);e.failures=failures;e.successes=settled.flatMap((r,i)=>r.status==='fulfilled'?[selected[i]]:[]);throw e;}
+  return settled.map(r=>r.value);
 }
+export async function history(uuid,endpoint,{after=0,limit=500}={}){
+  endpoint=validateEndpoints([endpoint])[0];
+  const messages=[],hashes=new Map();let cursor=after,more=true;
+  while(more){const u=new URL(endpoint);u.searchParams.set('action','messages');u.searchParams.set('sessionId',uuid);u.searchParams.set('after',cursor);u.searchParams.set('limit',limit);const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});let page;try{page=await res.json();}catch{throw new Error('Resposta não JSON do endpoint.');}if(!res.ok||!page?.ok)throw new Error(page?.error||`Não foi possível consultar o endpoint (${res.status}).`);if(page.sessionId!==uuid||!Array.isArray(page.records)||typeof page.hasMore!=='boolean'||!Number.isSafeInteger(page.nextAfter))throw new Error('Página inválida no endpoint.');
+    for(const record of page.records){if(record.cursor!==cursor+1||typeof record.json!=='string'||await sha(record.json)!==record.hash||hashes.has(record.cursor))throw new Error('Falha de integridade no endpoint.');let msg;try{msg=JSON.parse(record.json);}catch{throw new Error('JSON inválido no endpoint.');}if(msg.sessionId!==uuid||record.type!==msg.type)throw new Error('Sessão ou tipo divergente no endpoint.');hashes.set(record.cursor,record.hash);cursor=record.cursor;Object.defineProperties(msg,{_endpoint:{value:endpoint},_cursor:{value:cursor},_receivedAt:{value:record.receivedAt},_transportHash:{value:record.hash}});messages.push(msg);}
+    if(page.nextAfter!==cursor||(page.hasMore&&page.records.length===0))throw new Error('Paginação incoerente no endpoint.');more=page.hasMore;
+  }
+  return messages;
+}
+export async function histories(uuid,endpoints){const list=validateEndpoints(endpoints),settled=await Promise.allSettled(list.map(e=>history(uuid,e)));return {channels:settled.map((r,i)=>({number:i+1,endpoint:list[i],status:r.status==='fulfilled'?'updated':'failed',messages:r.status==='fulfilled'?r.value:[],error:r.status==='rejected'?r.reason.message:null,lastCursor:r.status==='fulfilled'?(r.value.at(-1)?._cursor||0):0})),messages:settled.flatMap(r=>r.status==='fulfilled'?r.value:[]),complete:settled.every(r=>r.status==='fulfilled')};}
 export function saneMessage(m, uuid, type) { return m && m.type===type && m.protocolVersion===1 && m.sessionId===uuid && typeof m.signature==='string' && typeof m.publishedAt==='string'; }
 export async function trustedConfigs(messages, uuid, trust) {
   const valid=[];
   for (const m of messages) {
-    if (!saneMessage(m,uuid,m.type) || !['PUBLIC_KEY','SPREADSHEET'].includes(m.type) || !m.adminSigningPublicKeyJwk) continue;
+    if (!saneMessage(m,uuid,m.type) || m.type!=='PUBLIC_KEY' || !m.adminSigningPublicKeyJwk) continue;
     if (await keyFingerprint(m.adminSigningPublicKeyJwk)!==trust || m.signingKeyFingerprint!==trust || !(await verify(m,m.adminSigningPublicKeyJwk))) continue;
     valid.push(m);
   }
   const latest = type => valid.filter(x=>x.type===type).sort((a,b)=>Date.parse(a.publishedAt)-Date.parse(b.publishedAt)).at(-1);
-  return { publicKey:latest('PUBLIC_KEY'), spreadsheet:latest('SPREADSHEET') };
+  return { publicKey:latest('PUBLIC_KEY') };
 }
 
 export function parseSheetUrl(raw) {
@@ -130,26 +164,33 @@ function csvRows(text) {
 }
 const norm=s=>String(s??'').normalize('NFKC').trim().replace(/\s+/g,' ').toLocaleLowerCase('pt-BR');
 export async function parseBallot(csv) {
-  const rows=csvRows(csv); if(norm(rows[2]?.[1])!=='0'&&norm(rows[2]?.[1])!=='1') throw new Error('B3 deve conter 0 ou 1.');
+  const rows=csvRows(csv); if(norm(rows[2]?.[2])!=='0'&&norm(rows[2]?.[2])!=='1') throw new Error('C3 deve conter 0 ou 1.');
   const questions=[]; let i=5;
-  while(i<rows.length){ while(i<rows.length && !rows[i].slice(0,3).some(x=>norm(x))) i++; if(i>=rows.length)break;
-    const title=String(rows[i][0]??'').trim(); if(!title)throw new Error(`Pergunta inválida na linha ${i+1}.`); i++;
-    if(i>=rows.length||!norm(rows[i][0]))throw new Error(`Pergunta "${title}" sem opções.`);
-    const count=Number(rows[i][1]), shuffle=String(rows[i][2]??'').trim(); const opts=[];
-    while(i<rows.length&&rows[i].slice(0,3).some(x=>norm(x))){ if(!norm(rows[i][0]))throw new Error(`Opção vazia em "${title}".`); if(opts.length&& (norm(rows[i][1])||norm(rows[i][2])))throw new Error(`Configuração inesperada em "${title}".`); opts.push(String(rows[i][0]).trim()); i++; }
-    if(opts.length<2||!Number.isInteger(count)||count<1||count>opts.length||!['0','1'].includes(shuffle)||new Set(opts.map(norm)).size!==opts.length)throw new Error(`Bloco inválido: ${title}.`);
-    const questionId=await sha(`${questions.length}\n${norm(title)}`); const options=[]; for(let x=0;x<opts.length;x++)options.push({id:await sha(`${questionId}\n${x}\n${norm(opts[x])}`),text:opts[x]});
-    questions.push({id:questionId,text:title,count,shuffle:shuffle==='1',options});
+  while(i<rows.length){ while(i<rows.length && !rows[i].slice(0,5).some(x=>norm(x))) i++; if(i>=rows.length)break;
+    const title=String(rows[i][1]??'').trim(); if(!title)throw new Error(`Pergunta inválida na linha ${i+1}.`); i++;
+    if(i>=rows.length||!norm(rows[i][1]))throw new Error(`Pergunta "${title}" sem opções.`);
+    const first=i,count=Number(rows[first][2]),shuffle=String(rows[first][3]??'').trim(),opts=[];let showImages=String(rows[first][4]??'').trim(),imageMarker=-1;
+    while(i<rows.length&&rows[i].slice(0,5).some(x=>norm(x))){const columnC=norm(rows[i][2]);if(!norm(rows[i][1])){if(imageMarker>=0&&i===imageMarker+1&&['0','1'].includes(columnC)){showImages=String(rows[i][2]).trim();i++;continue;}throw new Error(`Opção vazia em "${title}".`);}if(columnC.includes('mostrar imagens')){if(imageMarker!==-1)throw new Error(`Configuração de imagens repetida em "${title}".`);imageMarker=i;}const image=String(rows[i][0]??'').trim();if(image){let u;try{u=new URL(image);}catch{throw new Error(`Imagem inválida em "${title}".`);}if(u.protocol!=='https:')throw new Error(`Imagem inválida em "${title}".`);}opts.push({text:String(rows[i][1]).trim(),image});i++;}
+    if(!showImages&&imageMarker>=0)showImages=String(rows[imageMarker+1]?.[2]??'').trim();
+    for(let row=first;row<i;row++){const allowedC=row===first||row===imageMarker||row===imageMarker+1,allowedD=row===first,allowedE=row===first;if((!allowedC&&norm(rows[row][2]))||(!allowedD&&norm(rows[row][3]))||(!allowedE&&norm(rows[row][4])))throw new Error(`Configuração inesperada em "${title}".`);}
+    if(opts.length<2||!Number.isInteger(count)||count<1||count>opts.length||!['0','1'].includes(shuffle)||!['0','1'].includes(showImages)||new Set(opts.map(o=>norm(o.text))).size!==opts.length)throw new Error(`Bloco inválido: ${title}.`);
+    const questionId=await sha(`${questions.length}\n${norm(title)}`),options=[];for(let x=0;x<opts.length;x++)options.push({id:await sha(`${questionId}\n${x}\n${norm(opts[x].text)}\n${opts[x].image}`),...opts[x]});
+    questions.push({id:questionId,text:title,count,shuffle:shuffle==='1',showImages:showImages==='1',options});
   }
   if(!questions.length)throw new Error('Nenhuma pergunta encontrada.');
-  const canonicalBallot=questions.map(q=>({id:q.id,text:norm(q.text),count:q.count,shuffle:q.shuffle,options:q.options.map(o=>({id:o.id,text:norm(o.text)}))}));
-  const validated=[]; for(let r=1;r<rows.length;r++){const value=String(rows[r]?.[4]??'').trim(),m=value.match(/^(.*)-([A-Za-z0-9_-]{43})$/);if(m&&m[1].trim())validated.push({name:m[1].trim(),deviceId:m[2]});}
-  return {state:String(rows[2][1]).trim(),questions,ballotFingerprint:await sha(canonical(canonicalBallot)),validated,rows};
+  const canonicalBallot=questions.map(q=>({id:q.id,text:norm(q.text),count:q.count,shuffle:q.shuffle,showImages:q.showImages,options:q.options.map(o=>({id:o.id,text:norm(o.text),image:o.image}))}));
+  const validated=[];for(let r=1;r<rows.length;r++){const value=String(rows[r]?.[5]??'').trim(),m=value.match(/^(.*)-([A-Za-z0-9_-]{43})$/);if(m&&m[1].trim())validated.push({name:m[1].trim(),deviceId:m[2]});}
+  const columnH=rows.map((r,index)=>index?r[7]:'').filter(v=>norm(v)),columnF=rows.map((r,index)=>index?r[5]:'').filter(v=>/^https:\/\/script\.google\.com\/macros\/s\//i.test(String(v).trim()));
+  const endpoints=validateEndpoints(columnH.length?columnH:columnF);
+  return {state:String(rows[2][2]).trim(),questions,ballotFingerprint:await sha(canonical(canonicalBallot)),validated,endpoints,rows};
 }
-export async function fetchSheet(sheetId,gid) {
+export async function fetchSheet(sheetId,gid='0') {
   let r;
-  try { r=await fetch(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/export?format=csv&gid=${encodeURIComponent(gid)}`,{cache:'no-store'}); }
-  catch { throw new Error('Não foi possível acessar a planilha. Confira o link e libere a leitura para qualquer pessoa com o link.'); }
+  try { r=await fetchWithTimeout(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/export?format=csv&gid=${encodeURIComponent(gid)}`,{cache:'no-store'}); }
+  catch (error) {
+    if (error?.message?.startsWith('A requisição demorou demais.')) throw error;
+    throw new Error('Não foi possível acessar a planilha. Confira o link e libere a leitura para qualquer pessoa com o link.');
+  }
   if(!r.ok)throw new Error(`Planilha indisponível (${r.status}). Confira o link e o compartilhamento público.`);
   return parseBallot(await r.text());
 }

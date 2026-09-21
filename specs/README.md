@@ -9,6 +9,12 @@ produção.
 - [`001-votacao-github-pages/spec.md`](001-votacao-github-pages/spec.md) — aplicação
   estática de votação, com páginas de servidor, cliente e painel, Google Sheets,
   ntfy e criptografia assimétrica.
+- [`002-canais-google-sheets/spec.md`](002-canais-google-sheets/spec.md) — substituição
+  do ntfy por três canais Google Sheets independentes, com divisão equilibrada
+  dos eleitores e agregação no servidor e no painel.
+- [`003-sessao-planilha-endpoints/spec.md`](003-sessao-planilha-endpoints/spec.md) —
+  assistente de início da sessão, `sheet-id` na URL, descoberta dos endpoints na
+  coluna G e uma guia por sessão em cada planilha de canal.
 
 ## Fluxo de trabalho sugerido
 
