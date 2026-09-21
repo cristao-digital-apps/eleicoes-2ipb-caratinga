@@ -54,6 +54,30 @@ export const storage = uuid => ({
   put(name, value) { this.set(name, JSON.stringify(value)); }
 });
 
+export async function saveEndpointsCache(cache,sheetId,endpoints){
+  const normalized=validateEndpoints(endpoints),fingerprint=await endpointFingerprint(normalized);
+  const value={sheetId,endpoints:normalized,fingerprint};cache.put('endpointsCache',value);return value;
+}
+export async function loadEndpointsCache(cache,sheetId){
+  const value=cache.json('endpointsCache');
+  if(!value||value.sheetId!==sheetId||!Array.isArray(value.endpoints)||typeof value.fingerprint!=='string')return null;
+  try{const endpoints=validateEndpoints(value.endpoints),fingerprint=await endpointFingerprint(endpoints);return fingerprint===value.fingerprint?{sheetId,endpoints,fingerprint}:null;}catch{return null;}
+}
+
+export const SHEET_CACHE_MAX_AGE_MS=15000;
+export async function saveSheetCache(cache,sheetId,ballot,now=Date.now()){
+  const payload=JSON.stringify(ballot),value={sheetId,fetchedAt:now,hash:await sha(payload),ballot};cache.put('sheetCache',value);return ballot;
+}
+export async function loadSheetCache(cache,sheetId,{maxAgeMs=SHEET_CACHE_MAX_AGE_MS,now=Date.now()}={}){
+  const value=cache.json('sheetCache');
+  if(!value||value.sheetId!==sheetId||!Number.isFinite(value.fetchedAt)||now-value.fetchedAt<0||now-value.fetchedAt>maxAgeMs||!value.ballot||typeof value.hash!=='string')return null;
+  try{return await sha(JSON.stringify(value.ballot))===value.hash?value.ballot:null;}catch{return null;}
+}
+export async function fetchSheetCached(sheetId,cache,{force=false,maxAgeMs=SHEET_CACHE_MAX_AGE_MS}={}){
+  if(!force){const cached=await loadSheetCache(cache,sheetId,{maxAgeMs});if(cached)return cached;}
+  return saveSheetCache(cache,sheetId,await fetchSheet(sheetId));
+}
+
 export function b64(bytes, url = false) {
   let s = ''; const u = new Uint8Array(bytes);
   for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000));
