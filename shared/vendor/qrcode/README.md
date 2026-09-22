@@ -1,0 +1,1 @@
+QR encoder vendorizado de qrcode-terminal 0.12.0 (vendor/QRCode), baseado no QRCode for JavaScript de Kazuhiko Arase. Imports e exports adaptados para módulos ES. Consulte LICENSE e os avisos nos arquivos fonte.
