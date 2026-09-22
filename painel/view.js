@@ -12,12 +12,25 @@ export function createPanelView(app, {action, eyebrow = 'Acompanhamento', title 
   const larger = el('button', {type: 'button', class: 'secondary', 'aria-label': 'Aumentar fonte dos nomes', title: 'Aumentar fonte dos nomes', text: 'A+'});
   top.append(el('div', {class: 'font-controls', role: 'group', 'aria-label': 'Tamanho da fonte dos nomes'}, smaller, larger));
   const total = el('div', {class: 'total', 'aria-live': 'polite', text: initialTotal});
+  const filterControls = el('div', {class: 'filter-controls', role: 'group', 'aria-label': 'Mostrar eleitores'});
+  filterControls.append(el('span', {class: 'filter-label', text: 'Mostrar'}));
+  const filterRow = el('div', {class: 'filter-row'});
+  const filterButtons = new Map([
+    ['all', 'Todos'],
+    ['voted', 'Votaram'],
+    ['pending', 'Ainda não votaram']
+  ].map(([key, label]) => {
+    const button = el('button', {type: 'button', class: 'secondary filter-button', text: label});
+    filterRow.append(button);
+    return [key, button];
+  }));
+  filterControls.append(filterRow);
   const states = el('div', {class: 'channel-states'});
   const status = el('p', {class: 'status', 'aria-live': 'polite'});
   const countdown = el('p', {class: 'status', 'aria-live': 'off'});
   const pageIndicator = el('div', {class: 'page-indicator', 'aria-live': 'off'});
   const groups = el('div', {class: 'groups'});
-  main.append(top, total, states, status, countdown, pageIndicator, groups);
+  main.append(top, total, filterControls, states, status, countdown, pageIndicator, groups);
   app.append(main);
 
   let fontSize = Number.parseInt(getComputedStyle(main).getPropertyValue('--name-font-size'), 10) || 18;
@@ -33,14 +46,40 @@ export function createPanelView(app, {action, eyebrow = 'Acompanhamento', title 
 
   let sortedPeople = [];
   let voted = new Set();
+  let filter = 'all';
   let signature = '';
   let pages = [];
   let pageIndex = 0;
   let layoutWidth = 0;
   let layoutHeight = 0;
 
+  function filteredPeople() {
+    return sortedPeople.filter(person => filter === 'all' || voted.has(person.deviceId) === (filter === 'voted'));
+  }
+
+  function updateFilterButtons() {
+    for (const [key, button] of filterButtons) {
+      const active = key === filter;
+      button.classList.toggle('selected', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+  }
+  for (const [key, button] of filterButtons) button.onclick = () => {
+    if (filter === key) return;
+    filter = key;
+    pageIndex = 0;
+    updateFilterButtons();
+    paginate();
+  };
+  updateFilterButtons();
+
   function showPage() {
     const current = pages[pageIndex] || [];
+    if (!current.length && sortedPeople.length) {
+      groups.replaceChildren(el('p', {class: 'filter-empty', text: 'Nenhum eleitor neste filtro.'}));
+      pageIndicator.textContent = '';
+      return;
+    }
     groups.replaceChildren(...current.map(column =>
       el('div', {class: 'page-column'}, ...column.map(({letter, people}) =>
         el('section', {class: 'card group'},
@@ -74,7 +113,8 @@ export function createPanelView(app, {action, eyebrow = 'Acompanhamento', title 
     list.append(sample);
     const baseHeight = probe.offsetHeight - sample.offsetHeight;
     sample.remove();
-    const measured = sortedPeople.map(person => el('div', {class: 'person voted', text: person.name}));
+    const peopleToShow = filteredPeople();
+    const measured = peopleToShow.map(person => el('div', {class: 'person voted', text: person.name}));
     list.append(...measured);
     const heights = measured.map(node => node.offsetHeight);
     probe.remove();
@@ -91,8 +131,8 @@ export function createPanelView(app, {action, eyebrow = 'Acompanhamento', title 
       segment = null;
     }
     nextColumn();
-    for (let i = 0; i < sortedPeople.length; i++) {
-      const person = sortedPeople[i];
+    for (let i = 0; i < peopleToShow.length; i++) {
+      const person = peopleToShow[i];
       const letter = person.name.normalize('NFD').replace(/\p{M}/gu, '').charAt(0).toUpperCase();
       const sameGroup = segment && segment.letter === letter;
       const needed = heights[i] + (sameGroup ? 8 : baseHeight + (column.length ? gap : 0));
@@ -106,7 +146,7 @@ export function createPanelView(app, {action, eyebrow = 'Acompanhamento', title 
       segment.people.push(person);
       used += heights[i];
     }
-    if (!sortedPeople.length) pages = [];
+    if (!peopleToShow.length) pages = [];
     pageIndex = Math.min(pageIndex, Math.max(0, pages.length - 1));
     showPage();
   }
@@ -114,9 +154,11 @@ export function createPanelView(app, {action, eyebrow = 'Acompanhamento', title 
   function render(people, votedIds) {
     const allowed = new Set(people.map(person => person.deviceId));
     total.textContent = `${[...votedIds].filter(id => allowed.has(id)).length} votos de ${allowed.size} registrados.`;
+    const previousVoted = voted;
     voted = votedIds;
     const nextSignature = people.map(person => `${person.deviceId}\u0000${person.name}`).join('\u0001');
-    if (nextSignature !== signature) {
+    const filteredMembershipChanged = filter !== 'all' && (voted.size !== previousVoted.size || [...voted].some(id => !previousVoted.has(id)));
+    if (nextSignature !== signature || filteredMembershipChanged) {
       signature = nextSignature;
       sortedPeople = [...people].sort((a, b) => collator.compare(a.name, b.name));
       paginate();
