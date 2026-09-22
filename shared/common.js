@@ -164,6 +164,23 @@ export async function history(uuid,endpoint,{after=0,limit=500}={}){
 }
 export async function histories(uuid,endpoints){const list=validateEndpoints(endpoints),settled=await Promise.allSettled(list.map(e=>history(uuid,e)));return {channels:settled.map((r,i)=>({number:i+1,endpoint:list[i],status:r.status==='fulfilled'?'updated':'failed',messages:r.status==='fulfilled'?r.value:[],error:r.status==='rejected'?r.reason.message:null,lastCursor:r.status==='fulfilled'?(r.value.at(-1)?._cursor||0):0})),messages:settled.flatMap(r=>r.status==='fulfilled'?r.value:[]),complete:settled.every(r=>r.status==='fulfilled')};}
 export function saneMessage(m, uuid, type) { return m && m.type===type && m.protocolVersion===1 && m.sessionId===uuid && typeof m.signature==='string' && typeof m.publishedAt==='string'; }
+export async function votingStart(messages,uuid,trust,ballotFingerprint){
+  for(const m of messages){
+    if(!saneMessage(m,uuid,'VOTING_START')||m.signingKeyFingerprint!==trust||m.ballotFingerprint!==ballotFingerprint||!m.adminSigningPublicKeyJwk||typeof m.startId!=='string')continue;
+    try{if(await keyFingerprint(m.adminSigningPublicKeyJwk)===trust&&await verify(m,m.adminSigningPublicKeyJwk))return m;}catch{}
+  }
+  return null;
+}
+export async function votingStarted(messages,uuid,trust,ballotFingerprint){return Boolean(await votingStart(messages,uuid,trust,ballotFingerprint));}
+export async function nameDecisions(messages,uuid,trust){
+  const decisions=new Map();
+  for(const m of messages){
+    if(!saneMessage(m,uuid,'NAME_DECISION')||m.signingKeyFingerprint!==trust||!['approved','rejected','typo'].includes(m.decision)||typeof m.requestId!=='string'||typeof m.deviceId!=='string'||typeof m.name!=='string'||!m.adminSigningPublicKeyJwk||!await verify(m,m.adminSigningPublicKeyJwk))continue;
+    try{if(await keyFingerprint(m.adminSigningPublicKeyJwk)!==trust)continue;}catch{continue;}
+    decisions.set(m.requestId,m);
+  }
+  return decisions;
+}
 export async function trustedConfigs(messages, uuid, trust) {
   const valid=[];
   for (const m of messages) {
@@ -188,8 +205,8 @@ function csvRows(text) {
 }
 const norm=s=>String(s??'').normalize('NFKC').trim().replace(/\s+/g,' ').toLocaleLowerCase('pt-BR');
 export async function parseBallot(csv) {
-  const rows=csvRows(csv); if(norm(rows[2]?.[2])!=='0'&&norm(rows[2]?.[2])!=='1') throw new Error('C3 deve conter 0 ou 1.');
-  const questions=[]; let i=5;
+  const rows=csvRows(csv),legacy=norm(rows[0]?.[1])==='chave pública'&&/servidor|parado|pausado/.test(norm(rows[2]?.[1])),state=legacy?String(rows[2]?.[2]??'').trim():'';
+  const questions=[]; let i=legacy?5:0;
   while(i<rows.length){ while(i<rows.length && !rows[i].slice(0,5).some(x=>norm(x))) i++; if(i>=rows.length)break;
     const title=String(rows[i][1]??'').trim(); if(!title)throw new Error(`Pergunta inválida na linha ${i+1}.`); i++;
     if(i>=rows.length||!norm(rows[i][1]))throw new Error(`Pergunta "${title}" sem opções.`);
@@ -203,10 +220,10 @@ export async function parseBallot(csv) {
   }
   if(!questions.length)throw new Error('Nenhuma pergunta encontrada.');
   const canonicalBallot=questions.map(q=>({id:q.id,text:norm(q.text),count:q.count,shuffle:q.shuffle,showImages:q.showImages,options:q.options.map(o=>({id:o.id,text:norm(o.text),image:o.image}))}));
-  const validated=[];for(let r=1;r<rows.length;r++){const value=String(rows[r]?.[5]??'').trim(),m=value.match(/^(.*)-([A-Za-z0-9_-]{43})$/);if(m&&m[1].trim())validated.push({name:m[1].trim(),deviceId:m[2]});}
-  const columnH=rows.map((r,index)=>index?r[7]:'').filter(v=>norm(v)),columnF=rows.map((r,index)=>index?r[5]:'').filter(v=>/^https:\/\/script\.google\.com\/macros\/s\//i.test(String(v).trim()));
+  const validated=[];for(let r=0;r<rows.length;r++){const value=String(rows[r]?.[5]??'').trim(),m=value.match(/^(.*)-([A-Za-z0-9_-]{43})$/);if(m&&m[1].trim())validated.push({name:m[1].trim(),deviceId:m[2]});}
+  const columnH=rows.map(r=>r[7]).filter(v=>/^https:\/\/script\.google\.com\/macros\/s\//i.test(String(v??'').trim())),columnF=rows.map(r=>r[5]).filter(v=>/^https:\/\/script\.google\.com\/macros\/s\//i.test(String(v??'').trim()));
   const endpoints=validateEndpoints(columnH.length?columnH:columnF);
-  return {state:String(rows[2][2]).trim(),questions,ballotFingerprint:await sha(canonical(canonicalBallot)),validated,endpoints,rows};
+  return {state,questions,ballotFingerprint:await sha(canonical(canonicalBallot)),validated,endpoints,rows};
 }
 export async function fetchSheet(sheetId,gid='0') {
   let r;

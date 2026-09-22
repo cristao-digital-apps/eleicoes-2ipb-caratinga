@@ -396,6 +396,14 @@ coluna E e varre o tópico a cada 5 segundos.
 - blocos e nomes internos ficam em ordem alfabética pt-BR;
 - ordenação ignora caixa/acentos, mas preserva a grafia exibida;
 - cada `Nome-<deviceId>` é distinto, mesmo com nome repetido.
+- cabeçalho e contagem geral permanecem visíveis no topo;
+- os nomes são distribuídos em páginas conforme o espaço disponível, sem cortar
+  cartões, e avançam automaticamente a cada 8 segundos; após a última página,
+  a primeira reaparece;
+- a página visível é preservada quando chegam novos votos e recalculada quando
+  mudam os nomes ou o tamanho da tela.
+- controles no topo aumentam ou diminuem a fonte dos nomes e recalculam as
+  páginas; todos os nomes continuam no ciclo.
 
 O card começa neutro. Ao encontrar o primeiro `VOTE` estruturalmente válido daquele
 `deviceId`, fica verde; os demais são ignorados. Verde significa somente **voto

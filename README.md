@@ -16,6 +16,16 @@ implante uma ou mais cópias de [Code.gs](google-apps-script/Code.gs), execute
 `configurar()` em cada planilha de canal e coloque as URLs `/exec` na coluna H
 da planilha mestre.
 
+As questões podem começar na primeira linha (título na coluna B), ou manter o
+formato antigo a partir da linha 6. Endpoints podem estar na coluna H desde H1.
+Depois de publicar a chave, use **Iniciar Votação** no administrador: o comando
+é gravado em todos os endpoints, e C3 não abre mais a votação. Atualize e
+reimplante cada Web App do Apps Script para aceitar o comando `VOTING_START`.
+
+Para visualizar o painel com dados fictícios, abra
+`http://localhost:8087/painel/preview.html`. A prévia permite escolher de 1 a
+2.000 eleitores e quantos aparecem como votados, sem acessar a votação real.
+
 O Apps Script cria uma guia com o UUID para cada sessão. Publique o Web App para
 execução pela conta proprietária e acesso público; nenhuma credencial é colocada no site.
 Faça um teste de carga com a capacidade planejada antes do uso em produção.
