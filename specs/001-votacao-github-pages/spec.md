@@ -326,7 +326,9 @@ carregamento, o texto:
 > Aguarde o administrador validar seu nome para a votação
 
 e **Editar nome**. Editar e confirmar publica nova solicitação com o mesmo
-`deviceId`; apenas a mais recente daquele aparelho é exibida como vigente.
+`deviceId`; apenas a mais recente daquele aparelho é exibida como vigente. A
+tela exibe uma contagem regressiva de 5 segundos e, ao chegar a zero, consulta
+automaticamente a autorização novamente. Não há botão de atualização manual.
 
 ### 6.3 Espera e início da cédula
 
@@ -336,8 +338,8 @@ O cliente consulta a coluna E até encontrar exatamente
 > Aguardando o administrador iniciar a votação
 
 A tela terá contagem regressiva visível de 20 a 0 segundos. Ao chegar a zero, lê a
-planilha novamente e reinicia a contagem. Abaixo há **Atualizar** com ícone de
-recarregar; ele verifica imediatamente sem criar requisições concorrentes.
+configuração e a autorização novamente e reinicia a contagem. Não há botão de
+atualização manual e não são criadas requisições concorrentes.
 
 O estado canônico vem da célula B3 da planilha:
 
