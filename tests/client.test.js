@@ -11,3 +11,9 @@ test('esperas do cliente têm atualização automática com temporizador visíve
   assert.doesNotMatch(client,/const update=el\('button'/);
   assert.doesNotMatch(client,/setTimeout\(waiting/);
 });
+
+test('cliente trata rejeição, correção e revogação sem reutilizar solicitação',()=>{
+  assert.match(client,/\['rejected','typo','revoked'\]/);
+  assert.match(client,/cache\.set\('requestId',''\)/);
+  assert.match(client,/monitorDecision\(\)/);
+});

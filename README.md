@@ -17,10 +17,17 @@ implante uma ou mais cópias de [Code.gs](google-apps-script/Code.gs), execute
 da planilha mestre.
 
 O Apps Script só cria armazenamento após o registro administrativo assinado.
-Execute `configurar()` novamente após implantar esta versão. Sessões antigas são
-incompatíveis e devem receber um UUID novo. Publique o Web App para execução pela
-conta proprietária e acesso público; nenhuma credencial administrativa vai no QR.
+Execute `configurar()` novamente após implantar esta versão. A rotina cria o
+diário privado e faz o backfill idempotente das sessões existentes do protocolo 2;
+sessões do protocolo 1 continuam incompatíveis. Depois, crie uma nova versão da
+implantação de cada Web App. Publique para execução pela conta proprietária e
+acesso público; nenhuma credencial administrativa vai no QR.
 Faça um teste de carga com a capacidade planejada antes do uso em produção.
+
+Para visualizar o painel com dados fictícios, abra
+`http://localhost:8087/painel/preview.html`. A prévia aceita de 1 a 2.000
+eleitores e permite escolher quantos aparecem como votados sem acessar uma sessão
+real.
 
 Em desenvolvimento, use exatamente `localhost` (não `0.0.0.0`), que o navegador
 trata como origem segura. Fora da máquina local, o site precisa ser servido por

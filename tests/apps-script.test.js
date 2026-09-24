@@ -22,3 +22,11 @@ test('estado da sessão é administrativo e também imposto ao receber votos',()
   assert.match(source,/session_\(id\)\.state!=='active'/);
   assert.match(source,/endpointListFingerprint,'paused'/);
 });
+
+test('dados privados usam paginação íntegra e diário migrável',()=>{
+  assert.match(source,/journal:\['sessionId','cursor','kind'/);
+  assert.match(source,/function page_\(x,items\)/);
+  assert.match(source,/function backfill_\(\)/);
+  assert.match(source,/listPanelCapabilities:listPanels_/);
+  assert.match(source,/markDeviceTypo:x=>decision_\(x,'typo'\)/);
+});
