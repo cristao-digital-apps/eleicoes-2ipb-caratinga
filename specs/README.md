@@ -15,6 +15,9 @@ produção.
 - [`003-sessao-planilha-endpoints/spec.md`](003-sessao-planilha-endpoints/spec.md) —
   assistente de início da sessão, `sheet-id` na URL, descoberta dos endpoints na
   coluna G e uma guia por sessão em cada planilha de canal.
+- [`004-autorizacao-administrativa-privacidade/spec.md`](004-autorizacao-administrativa-privacidade/spec.md)
+  — autorização administrativa por capacidade e assinatura, fixação da autoridade,
+  APIs públicas mínimas, validações privadas e proteção contra abuso.
 
 ## Fluxo de trabalho sugerido
 

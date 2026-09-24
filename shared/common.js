@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const FP_RE = /^[A-Za-z0-9_-]{43}$/;
 export const te = new TextEncoder();
@@ -48,35 +48,11 @@ export async function endpointFingerprint(endpoints){return sha(validateEndpoint
 export async function assignedEndpoint(uuid,deviceId,endpoints){const list=validateEndpoints(endpoints),fingerprint=await endpointFingerprint(list),digest=unb64(await sha(`${uuid}:${deviceId}:${fingerprint}`));let value=0n;for(const byte of digest.slice(0,8))value=(value<<8n)|BigInt(byte);const index=Number(value%BigInt(list.length));return {endpoint:list[index],index,fingerprint};}
 
 export const storage = uuid => ({
-  get(name) { try { return localStorage.getItem(`eleicoes:v1:${uuid}:${name}`); } catch { return null; } },
-  set(name, value) { localStorage.setItem(`eleicoes:v1:${uuid}:${name}`, value); },
+  get(name) { try { return localStorage.getItem(`eleicoes:v2:${uuid}:${name}`); } catch { return null; } },
+  set(name, value) { localStorage.setItem(`eleicoes:v2:${uuid}:${name}`, value); },
   json(name) { try { return JSON.parse(this.get(name)); } catch { return null; } },
   put(name, value) { this.set(name, JSON.stringify(value)); }
 });
-
-export async function saveEndpointsCache(cache,sheetId,endpoints){
-  const normalized=validateEndpoints(endpoints),fingerprint=await endpointFingerprint(normalized);
-  const value={sheetId,endpoints:normalized,fingerprint};cache.put('endpointsCache',value);return value;
-}
-export async function loadEndpointsCache(cache,sheetId){
-  const value=cache.json('endpointsCache');
-  if(!value||value.sheetId!==sheetId||!Array.isArray(value.endpoints)||typeof value.fingerprint!=='string')return null;
-  try{const endpoints=validateEndpoints(value.endpoints),fingerprint=await endpointFingerprint(endpoints);return fingerprint===value.fingerprint?{sheetId,endpoints,fingerprint}:null;}catch{return null;}
-}
-
-export const SHEET_CACHE_MAX_AGE_MS=15000;
-export async function saveSheetCache(cache,sheetId,ballot,now=Date.now()){
-  const payload=JSON.stringify(ballot),value={sheetId,fetchedAt:now,hash:await sha(payload),ballot};cache.put('sheetCache',value);return ballot;
-}
-export async function loadSheetCache(cache,sheetId,{maxAgeMs=SHEET_CACHE_MAX_AGE_MS,now=Date.now()}={}){
-  const value=cache.json('sheetCache');
-  if(!value||value.sheetId!==sheetId||!Number.isFinite(value.fetchedAt)||now-value.fetchedAt<0||now-value.fetchedAt>maxAgeMs||!value.ballot||typeof value.hash!=='string')return null;
-  try{return await sha(JSON.stringify(value.ballot))===value.hash?value.ballot:null;}catch{return null;}
-}
-export async function fetchSheetCached(sheetId,cache,{force=false,maxAgeMs=SHEET_CACHE_MAX_AGE_MS}={}){
-  if(!force){const cached=await loadSheetCache(cache,sheetId,{maxAgeMs});if(cached)return cached;}
-  return saveSheetCache(cache,sheetId,await fetchSheet(sheetId));
-}
 
 export function b64(bytes, url = false) {
   let s = ''; const u = new Uint8Array(bytes);
@@ -88,6 +64,7 @@ export function unb64(s) {
   const raw = atob(s); return Uint8Array.from(raw, c => c.charCodeAt(0));
 }
 export async function sha(value) { return b64(await crypto.subtle.digest('SHA-256', typeof value === 'string' ? te.encode(value) : value), true); }
+export function randomCapability(bytes=32) { return b64(crypto.getRandomValues(new Uint8Array(bytes)),true); }
 export function pem(bytes, label) { const body = b64(bytes).match(/.{1,64}/g).join('\n'); return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----`; }
 export function depem(value, label) {
   const re = new RegExp(`^-----BEGIN ${label}-----\\s+([A-Za-z0-9+/=\\s]+)-----END ${label}-----$`);
@@ -139,12 +116,15 @@ export async function deviceKeys(cache) {
   const deviceId = await keyFingerprint(pub); cache.set('deviceId', deviceId); return {pub,priv,deviceId};
 }
 
-export function messageBase(type, uuid, fingerprint) { return { type, protocolVersion:1, sessionId:uuid, publishedAt:new Date().toISOString(), signingKeyFingerprint:fingerprint }; }
+export function messageBase(type, uuid, fingerprint) { return { type, protocolVersion:2, sessionId:uuid, publishedAt:new Date().toISOString(), signingKeyFingerprint:fingerprint }; }
+async function jsonRequest(endpoint,body){const res=await fetchWithTimeout(validateEndpoints([endpoint])[0],{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify(body)});let out;try{out=await res.json();}catch{throw Error('Resposta não JSON do endpoint.');}if(!res.ok||!out?.ok)throw Error(out?.error||`Endpoint respondeu ${res.status}.`);return out;}
+export async function publicApi(endpoint,action,data){return jsonRequest(endpoint,{action,...data,protocolVersion:PROTOCOL_VERSION});}
+export async function adminRequest(endpoint,action,sessionId,capability,privateJwk,data={}){const request={action,protocolVersion:PROTOCOL_VERSION,sessionId,adminCapability:capability,requestId:crypto.randomUUID(),issuedAt:new Date().toISOString(),nonce:randomCapability(18),...data};await sign(request,privateJwk);return jsonRequest(endpoint,request);}
+export async function adminAll(endpoints,action,sessionId,capability,privateJwk,data={}){const list=validateEndpoints(endpoints),request={action,protocolVersion:PROTOCOL_VERSION,sessionId,adminCapability:capability,requestId:crypto.randomUUID(),issuedAt:new Date().toISOString(),nonce:randomCapability(18),...data};await sign(request,privateJwk);const settled=await Promise.allSettled(list.map(endpoint=>jsonRequest(endpoint,request)));const failures=settled.flatMap((r,i)=>r.status==='rejected'?[{endpoint:list[i],error:r.reason.message}]:[]);if(failures.length){const e=Error(`Operação incompleta em ${failures.length} endpoint(s).`);e.failures=failures;throw e;}return settled.map(x=>x.value);}
+export async function registerAll(endpoints,data,privateJwk){const list=validateEndpoints(endpoints),request={action:'registerSession',protocolVersion:PROTOCOL_VERSION,requestId:crypto.randomUUID(),issuedAt:new Date().toISOString(),nonce:randomCapability(18),...data};await sign(request,privateJwk);const settled=await Promise.allSettled(list.map(endpoint=>jsonRequest(endpoint,request)));const failures=settled.flatMap((r,i)=>r.status==='rejected'?[{endpoint:list[i],error:r.reason.message}]:[]);if(failures.length){const e=Error(`Registro incompleto em ${failures.length} endpoint(s).`);e.failures=failures;throw e;}return settled.map(x=>x.value);}
 export async function publish(uuid,message,endpoint){
-  const url=validateEndpoints([endpoint])[0],res=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify({action:'append',sessionId:uuid,message})});
-  let receipt;try{receipt=await res.json();}catch{throw new Error('Resposta não JSON do endpoint.');}
-  if(!res.ok||!receipt?.ok)throw new Error(receipt?.error||`Endpoint respondeu ${res.status}.`);
-  if(receipt.sessionId!==uuid||!Number.isSafeInteger(receipt.cursor)||receipt.cursor<1||typeof receipt.hash!=='string')throw new Error('Recibo inválido do endpoint.');
+  const action=message.type==='NAME_REQUEST'?'appendNameRequest':'appendVote',receipt=await publicApi(endpoint,action,{sessionId:uuid,message});
+  if(receipt.sessionId!==uuid||typeof receipt.id!=='string')throw new Error('Recibo inválido do endpoint.');
   return receipt;
 }
 export async function publishAll(uuid,message,endpoints){
@@ -153,44 +133,7 @@ export async function publishAll(uuid,message,endpoints){
   if(failures.length){const e=new Error(`Publicação incompleta em ${failures.length} endpoint(s).`);e.failures=failures;e.successes=settled.flatMap((r,i)=>r.status==='fulfilled'?[selected[i]]:[]);throw e;}
   return settled.map(r=>r.value);
 }
-export async function history(uuid,endpoint,{after=0,limit=500}={}){
-  endpoint=validateEndpoints([endpoint])[0];
-  const messages=[],hashes=new Map();let cursor=after,more=true;
-  while(more){const u=new URL(endpoint);u.searchParams.set('action','messages');u.searchParams.set('sessionId',uuid);u.searchParams.set('after',cursor);u.searchParams.set('limit',limit);const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});let page;try{page=await res.json();}catch{throw new Error('Resposta não JSON do endpoint.');}if(!res.ok||!page?.ok)throw new Error(page?.error||`Não foi possível consultar o endpoint (${res.status}).`);if(page.sessionId!==uuid||!Array.isArray(page.records)||typeof page.hasMore!=='boolean'||!Number.isSafeInteger(page.nextAfter))throw new Error('Página inválida no endpoint.');
-    for(const record of page.records){if(record.cursor!==cursor+1||typeof record.json!=='string'||await sha(record.json)!==record.hash||hashes.has(record.cursor))throw new Error('Falha de integridade no endpoint.');let msg;try{msg=JSON.parse(record.json);}catch{throw new Error('JSON inválido no endpoint.');}if(msg.sessionId!==uuid||record.type!==msg.type)throw new Error('Sessão ou tipo divergente no endpoint.');hashes.set(record.cursor,record.hash);cursor=record.cursor;Object.defineProperties(msg,{_endpoint:{value:endpoint},_cursor:{value:cursor},_receivedAt:{value:record.receivedAt},_transportHash:{value:record.hash}});messages.push(msg);}
-    if(page.nextAfter!==cursor||(page.hasMore&&page.records.length===0))throw new Error('Paginação incoerente no endpoint.');more=page.hasMore;
-  }
-  return messages;
-}
-export async function histories(uuid,endpoints){const list=validateEndpoints(endpoints),settled=await Promise.allSettled(list.map(e=>history(uuid,e)));return {channels:settled.map((r,i)=>({number:i+1,endpoint:list[i],status:r.status==='fulfilled'?'updated':'failed',messages:r.status==='fulfilled'?r.value:[],error:r.status==='rejected'?r.reason.message:null,lastCursor:r.status==='fulfilled'?(r.value.at(-1)?._cursor||0):0})),messages:settled.flatMap(r=>r.status==='fulfilled'?r.value:[]),complete:settled.every(r=>r.status==='fulfilled')};}
-export function saneMessage(m, uuid, type) { return m && m.type===type && m.protocolVersion===1 && m.sessionId===uuid && typeof m.signature==='string' && typeof m.publishedAt==='string'; }
-export async function votingStart(messages,uuid,trust,ballotFingerprint){
-  for(const m of messages){
-    if(!saneMessage(m,uuid,'VOTING_START')||m.signingKeyFingerprint!==trust||m.ballotFingerprint!==ballotFingerprint||!m.adminSigningPublicKeyJwk||typeof m.startId!=='string')continue;
-    try{if(await keyFingerprint(m.adminSigningPublicKeyJwk)===trust&&await verify(m,m.adminSigningPublicKeyJwk))return m;}catch{}
-  }
-  return null;
-}
-export async function votingStarted(messages,uuid,trust,ballotFingerprint){return Boolean(await votingStart(messages,uuid,trust,ballotFingerprint));}
-export async function nameDecisions(messages,uuid,trust){
-  const decisions=new Map();
-  for(const m of messages){
-    if(!saneMessage(m,uuid,'NAME_DECISION')||m.signingKeyFingerprint!==trust||!['approved','rejected','typo'].includes(m.decision)||typeof m.requestId!=='string'||typeof m.deviceId!=='string'||typeof m.name!=='string'||!m.adminSigningPublicKeyJwk||!await verify(m,m.adminSigningPublicKeyJwk))continue;
-    try{if(await keyFingerprint(m.adminSigningPublicKeyJwk)!==trust)continue;}catch{continue;}
-    decisions.set(m.requestId,m);
-  }
-  return decisions;
-}
-export async function trustedConfigs(messages, uuid, trust) {
-  const valid=[];
-  for (const m of messages) {
-    if (!saneMessage(m,uuid,m.type) || m.type!=='PUBLIC_KEY' || !m.adminSigningPublicKeyJwk) continue;
-    if (await keyFingerprint(m.adminSigningPublicKeyJwk)!==trust || m.signingKeyFingerprint!==trust || !(await verify(m,m.adminSigningPublicKeyJwk))) continue;
-    valid.push(m);
-  }
-  const latest = type => valid.filter(x=>x.type===type).sort((a,b)=>Date.parse(a.publishedAt)-Date.parse(b.publishedAt)).at(-1);
-  return { publicKey:latest('PUBLIC_KEY') };
-}
+export function saneMessage(m, uuid, type) { return m && m.type===type && m.protocolVersion===2 && m.sessionId===uuid && typeof m.signature==='string' && typeof m.publishedAt==='string'; }
 
 export function parseSheetUrl(raw) {
   const url = new URL(raw); if (url.protocol!=='https:' || url.hostname!=='docs.google.com') throw new Error('Use uma URL HTTPS do Google Planilhas.');
@@ -205,8 +148,8 @@ function csvRows(text) {
 }
 const norm=s=>String(s??'').normalize('NFKC').trim().replace(/\s+/g,' ').toLocaleLowerCase('pt-BR');
 export async function parseBallot(csv) {
-  const rows=csvRows(csv),legacy=norm(rows[0]?.[1])==='chave pública'&&/servidor|parado|pausado/.test(norm(rows[2]?.[1])),state=legacy?String(rows[2]?.[2]??'').trim():'';
-  const questions=[]; let i=legacy?5:0;
+  const rows=csvRows(csv); if(norm(rows[2]?.[2])!=='0'&&norm(rows[2]?.[2])!=='1') throw new Error('C3 deve conter 0 ou 1.');
+  const questions=[]; let i=5;
   while(i<rows.length){ while(i<rows.length && !rows[i].slice(0,5).some(x=>norm(x))) i++; if(i>=rows.length)break;
     const title=String(rows[i][1]??'').trim(); if(!title)throw new Error(`Pergunta inválida na linha ${i+1}.`); i++;
     if(i>=rows.length||!norm(rows[i][1]))throw new Error(`Pergunta "${title}" sem opções.`);
@@ -220,10 +163,9 @@ export async function parseBallot(csv) {
   }
   if(!questions.length)throw new Error('Nenhuma pergunta encontrada.');
   const canonicalBallot=questions.map(q=>({id:q.id,text:norm(q.text),count:q.count,shuffle:q.shuffle,showImages:q.showImages,options:q.options.map(o=>({id:o.id,text:norm(o.text),image:o.image}))}));
-  const validated=[];for(let r=0;r<rows.length;r++){const value=String(rows[r]?.[5]??'').trim(),m=value.match(/^(.*)-([A-Za-z0-9_-]{43})$/);if(m&&m[1].trim())validated.push({name:m[1].trim(),deviceId:m[2]});}
-  const columnH=rows.map(r=>r[7]).filter(v=>/^https:\/\/script\.google\.com\/macros\/s\//i.test(String(v??'').trim())),columnF=rows.map(r=>r[5]).filter(v=>/^https:\/\/script\.google\.com\/macros\/s\//i.test(String(v??'').trim()));
+  const columnH=rows.map((r,index)=>index?r[7]:'').filter(v=>norm(v)),columnF=rows.map((r,index)=>index?r[5]:'').filter(v=>/^https:\/\/script\.google\.com\/macros\/s\//i.test(String(v).trim()));
   const endpoints=validateEndpoints(columnH.length?columnH:columnF);
-  return {state,questions,ballotFingerprint:await sha(canonical(canonicalBallot)),validated,endpoints,rows};
+  return {state:String(rows[2][2]).trim(),questions,ballotFingerprint:await sha(canonical(canonicalBallot)),endpoints,rows};
 }
 export async function fetchSheet(sheetId,gid='0') {
   let r;
