@@ -17,6 +17,18 @@ const csv=[
  ',,,,,,,https://script.google.com/macros/s/deployment_identifier_123/exec'
 ].join('\n');
 test('parser não transforma coluna pública em autorização',async()=>{const b=await parseBallot(csv);assert.equal(b.state,'1');assert.deepEqual(b.questions.map(q=>[q.count,q.shuffle,q.showImages,q.options.length]),[[2,true,true,4],[1,false,false,2]]);assert.equal(b.questions[0].options[0].image,'https://img.test/joao.jpg');assert.equal('validated' in b,false);assert.deepEqual(b.endpoints,[endpoint]);});
+test('parser aceita a estrutura compacta atual sem linhas de controle',async()=>{const compact=[
+ ',DIACONOS SEDE,quantidade de respostas aceitas,embaralhar respostas,,,,endpoints google app script',
+ ',Daniel,2,1,,,,https://script.google.com/macros/s/deployment_identifier_123/exec',
+ ',Douglas,mostrar imagens,,,,,',
+ ',Sérgio,1,,,,,',
+ ',Willian,,,,,,',
+ '',
+ ',DIACONOS LAGE,quantidade de respostas aceitas,embaralhar respostas,,,,',
+ ',Anderson,1,0,,,,',
+ ',Erivelton,mostrar imagens,,,,,',
+ ',Nilton,0,,,,,'
+].join('\n');const b=await parseBallot(compact);assert.equal(b.state,null);assert.deepEqual(b.questions.map(q=>[q.count,q.shuffle,q.showImages,q.options.length]),[[2,true,true,4],[1,false,false,3]]);assert.deepEqual(b.endpoints,[endpoint]);});
 test('fingerprint da cédula é determinística',async()=>assert.equal((await parseBallot(csv)).ballotFingerprint,(await parseBallot(csv)).ballotFingerprint));
 test('imagem em célula pode estar ausente no CSV do Google',async()=>assert.equal((await parseBallot(csv.replace('https://img.test/jose.jpg',''))).questions[0].showImages,true));
 test('nome exige duas palavras e aceita diacríticos',()=>{assert.equal(validName(' João D’Ávila-Silva '),'João D’Ávila-Silva');assert.throws(()=>validName('João1 Silva'));});

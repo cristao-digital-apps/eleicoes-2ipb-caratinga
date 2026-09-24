@@ -148,8 +148,8 @@ function csvRows(text) {
 }
 const norm=s=>String(s??'').normalize('NFKC').trim().replace(/\s+/g,' ').toLocaleLowerCase('pt-BR');
 export async function parseBallot(csv) {
-  const rows=csvRows(csv); if(norm(rows[2]?.[2])!=='0'&&norm(rows[2]?.[2])!=='1') throw new Error('C3 deve conter 0 ou 1.');
-  const questions=[]; let i=5;
+  const rows=csvRows(csv),withControls=norm(rows[0]?.[1])==='chave pública'&&/servidor|parado|pausado/.test(norm(rows[2]?.[1]))&&['0','1'].includes(norm(rows[2]?.[2])),state=withControls?String(rows[2][2]).trim():null;
+  const questions=[]; let i=withControls?5:0;
   while(i<rows.length){ while(i<rows.length && !rows[i].slice(0,5).some(x=>norm(x))) i++; if(i>=rows.length)break;
     const title=String(rows[i][1]??'').trim(); if(!title)throw new Error(`Pergunta inválida na linha ${i+1}.`); i++;
     if(i>=rows.length||!norm(rows[i][1]))throw new Error(`Pergunta "${title}" sem opções.`);
@@ -165,7 +165,7 @@ export async function parseBallot(csv) {
   const canonicalBallot=questions.map(q=>({id:q.id,text:norm(q.text),count:q.count,shuffle:q.shuffle,showImages:q.showImages,options:q.options.map(o=>({id:o.id,text:norm(o.text),image:o.image}))}));
   const columnH=rows.map((r,index)=>index?r[7]:'').filter(v=>norm(v)),columnF=rows.map((r,index)=>index?r[5]:'').filter(v=>/^https:\/\/script\.google\.com\/macros\/s\//i.test(String(v).trim()));
   const endpoints=validateEndpoints(columnH.length?columnH:columnF);
-  return {state:String(rows[2][2]).trim(),questions,ballotFingerprint:await sha(canonical(canonicalBallot)),endpoints,rows};
+  return {state,questions,ballotFingerprint:await sha(canonical(canonicalBallot)),endpoints,rows};
 }
 export async function fetchSheet(sheetId,gid='0') {
   let r;
